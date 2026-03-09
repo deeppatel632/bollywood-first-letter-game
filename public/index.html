@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Bollywood First Letter Game</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600;700;800&family=Cinzel+Decorative:wght@700&display=swap"
+    rel="stylesheet"
+  />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <!-- ══════════════════════════════ LOBBY SCREEN ══════════════════════════════ -->
+  <div id="lobby-screen" class="screen active">
+    <div class="lobby-container">
+      <div class="logo">
+        <span class="logo-icon">🎬</span>
+        <h1 class="logo-title">Bollywood</h1>
+        <p class="logo-sub">First Letter Guess Game</p>
+      </div>
+
+      <div class="glass-card lobby-card">
+        <div class="tab-row">
+          <button class="tab-btn active" id="tab-create">Create Room</button>
+          <button class="tab-btn"         id="tab-join">Join Room</button>
+        </div>
+
+        <!-- Create Room -->
+        <div id="panel-create" class="tab-panel active">
+          <div class="field">
+            <label>Your Name</label>
+            <input type="text" id="create-name" maxlength="20" placeholder="Enter your name" autocomplete="off" />
+          </div>
+          <button class="btn-primary" id="btn-create">🎭 Create Room</button>
+        </div>
+
+        <!-- Join Room -->
+        <div id="panel-join" class="tab-panel">
+          <div class="field">
+            <label>Your Name</label>
+            <input type="text" id="join-name" maxlength="20" placeholder="Enter your name" autocomplete="off" />
+          </div>
+          <div class="field">
+            <label>Room Code</label>
+            <input type="text" id="join-code" maxlength="6" placeholder="XXXXXX" style="text-transform:uppercase;letter-spacing:4px" autocomplete="off" />
+          </div>
+          <button class="btn-primary" id="btn-join">🚪 Join Room</button>
+        </div>
+
+        <p id="lobby-error" class="error-msg"></p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════ WAITING ROOM SCREEN ══════════════════════════ -->
+  <div id="waiting-screen" class="screen">
+    <div class="waiting-container">
+      <div class="glass-card waiting-card">
+        <h2 class="waiting-title">🎪 Waiting Room</h2>
+        <div class="room-code-display">
+          Room Code: <span id="display-code"></span>
+          <button class="btn-copy" id="btn-copy" title="Copy code">📋</button>
+        </div>
+        <p class="waiting-hint">Share the code with friends!</p>
+
+        <div class="player-list-waiting" id="waiting-player-list"></div>
+
+        <div id="host-controls" class="host-controls hidden">
+          <button class="btn-primary" id="btn-start-game">▶ Start Game</button>
+        </div>
+        <p id="waiting-msg" class="waiting-info">Waiting for the host to start…</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════ GAME SCREEN ══════════════════════════════ -->
+  <div id="game-screen" class="screen">
+
+    <!-- Top bar -->
+    <header class="game-header">
+      <div class="header-left">
+        <span class="game-logo-sm">🎬</span>
+        <span class="game-title-sm">Bollywood FLG</span>
+      </div>
+      <div class="header-center">
+        <span id="round-badge">Round 1</span>
+      </div>
+      <div class="header-right">
+        <span id="room-code-badge"></span>
+      </div>
+    </header>
+
+    <main class="game-main">
+
+      <!-- LEFT: BOLLYWOOD Lives -->
+      <aside class="lives-panel glass-card">
+        <h3 class="panel-title">Lives</h3>
+        <div class="bollywood-word" id="bollywood-word">
+          <span class="bw-letter" data-index="0">B</span>
+          <span class="bw-letter" data-index="1">O</span>
+          <span class="bw-letter" data-index="2">L</span>
+          <span class="bw-letter" data-index="3">L</span>
+          <span class="bw-letter" data-index="4">Y</span>
+          <span class="bw-letter" data-index="5">W</span>
+          <span class="bw-letter" data-index="6">O</span>
+          <span class="bw-letter" data-index="7">O</span>
+          <span class="bw-letter" data-index="8">D</span>
+        </div>
+
+        <!-- Timer -->
+        <div class="timer-section">
+          <div class="timer-ring">
+            <svg viewBox="0 0 60 60">
+              <circle cx="30" cy="30" r="26" class="timer-bg"/>
+              <circle cx="30" cy="30" r="26" class="timer-arc" id="timer-arc"/>
+            </svg>
+            <span id="timer-count" class="timer-count">10</span>
+          </div>
+          <p class="timer-label">seconds</p>
+        </div>
+
+        <!-- Current turn -->
+        <div class="turn-info">
+          <p class="turn-label">Current Turn</p>
+          <p id="current-turn-name" class="turn-name">—</p>
+        </div>
+
+        <!-- Host controls -->
+        <div id="host-game-controls" class="host-game-controls hidden">
+          <button class="btn-sm btn-warn" id="btn-skip">⏭ Skip</button>
+          <button class="btn-sm btn-danger" id="btn-restart">🔄 Restart</button>
+        </div>
+      </aside>
+
+      <!-- CENTER: Hint Cards -->
+      <section class="hint-section">
+        <div class="hint-grid">
+          <div class="hint-card glass-card" id="card-hero">
+            <div class="hint-label">🎭 Hero</div>
+            <div class="hint-letter" id="hint-hero">?</div>
+            <div class="hint-full hidden" id="full-hero"></div>
+          </div>
+          <div class="hint-card glass-card" id="card-heroine">
+            <div class="hint-label">💃 Heroine</div>
+            <div class="hint-letter" id="hint-heroine">?</div>
+            <div class="hint-full hidden" id="full-heroine"></div>
+          </div>
+          <div class="hint-card glass-card" id="card-movie">
+            <div class="hint-label">🎬 Movie</div>
+            <div class="hint-letter" id="hint-movie">?</div>
+            <div class="hint-full hidden" id="full-movie"></div>
+          </div>
+          <div class="hint-card glass-card" id="card-song">
+            <div class="hint-label">🎵 Song</div>
+            <div class="hint-letter" id="hint-song">?</div>
+            <div class="hint-full hidden" id="full-song"></div>
+          </div>
+        </div>
+
+        <!-- Revealed hints bar -->
+        <div class="extra-hints glass-card" id="extra-hints">
+          <span class="extra-hint-title">Hints:</span>
+          <span id="hint-year"     class="extra-hint-badge hidden">📅 <b id="yr"></b></span>
+          <span id="hint-director" class="extra-hint-badge hidden">🎥 <b id="dir"></b></span>
+          <span id="hint-plot"     class="extra-hint-badge hidden">📖 <b id="plt"></b></span>
+        </div>
+
+        <!-- Guess input -->
+        <div class="guess-area glass-card">
+          <input
+            type="text"
+            id="guess-input"
+            placeholder="Type your guess here…"
+            maxlength="100"
+            autocomplete="off"
+          />
+          <button class="btn-primary" id="btn-guess">🎯 Guess</button>
+        </div>
+
+        <!-- Feedback toast -->
+        <div id="guess-toast" class="guess-toast hidden"></div>
+      </section>
+
+      <!-- RIGHT: Players + Scoreboard + Chat -->
+      <aside class="right-panel">
+        <div class="glass-card scoreboard-card">
+          <h3 class="panel-title">🏆 Scoreboard</h3>
+          <ul id="scoreboard-list" class="scoreboard-list"></ul>
+        </div>
+
+        <div class="glass-card chat-card">
+          <h3 class="panel-title">💬 Chat</h3>
+          <div id="chat-messages" class="chat-messages"></div>
+          <div class="chat-input-row">
+            <input type="text" id="chat-input" placeholder="Say something…" maxlength="200" autocomplete="off" />
+            <button id="btn-chat-send" class="btn-sm btn-chat">➤</button>
+          </div>
+        </div>
+      </aside>
+
+    </main>
+  </div>
+
+  <!-- ════════════════════════════ ROUND END OVERLAY ═══════════════════════════ -->
+  <div id="round-end-overlay" class="overlay hidden">
+    <div class="glass-card overlay-card">
+      <h2 id="overlay-title">Round Over!</h2>
+      <div class="reveal-grid" id="reveal-grid"></div>
+      <div class="final-scores" id="overlay-scores"></div>
+      <p class="overlay-countdown" id="overlay-msg">Next round in <span id="next-countdown">6</span>s…</p>
+    </div>
+  </div>
+
+  <!-- ════════════════════════════ NOTIFICATION TOAST ═════════════════════════ -->
+  <div id="notif-toast" class="notif-toast hidden"></div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="client.js"></script>
+</body>
+</html>
