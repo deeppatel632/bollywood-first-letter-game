@@ -39,11 +39,13 @@ function createRoom(hostId, hostName) {
 function joinRoom(code, playerId, playerName) {
   const room = rooms.get(code);
   if (!room)                          return { error: 'Room not found. Check the code and try again.' };
-  if (room.state !== 'waiting')       return { error: 'Game has already started. Wait for the next round.' };
   if (room.players.length >= 8)       return { error: 'Room is full (max 8 players).' };
   if (room.players.some(p => p.name.toLowerCase() === playerName.toLowerCase())) {
     return { error: 'That name is already taken in this room.' };
   }
+  // FIX: removed state !== 'waiting' restriction.
+  // Players can now join a room while the game is already running.
+  // server.js will emit syncGameState so they see the current round immediately.
 
   room.players.push({ id: playerId, name: playerName, score: 0 });
   return room;

@@ -49,6 +49,8 @@ function clearRoomTimers(roomCode) {
 function startGame(io, room) {
   room.state = 'playing';
   room.roundNumber = 0;
+  room.currentPlayerIndex = 0;   // FIX: reset so every new game starts at player 0
+  room.usedMovies = [];           // fresh pool each game
   room.players.forEach(p => (p.score = 0));
   startRound(io, room);
 }
@@ -67,12 +69,14 @@ function startRound(io, room) {
 
   const hints = buildHints(movie, room.guessedParts);
 
+  // FIX: include hostId so every client can correctly set state.isHost
   io.to(room.code).emit('roundStart', {
     hints,
-    wrongGuesses:   room.wrongGuesses,
-    roundNumber:    room.roundNumber,
-    currentPlayer:  room.players[room.currentPlayerIndex],
-    scores:         scoreboard(room),
+    hostId:        room.hostId,
+    wrongGuesses:  room.wrongGuesses,
+    roundNumber:   room.roundNumber,
+    currentPlayer: room.players[room.currentPlayerIndex],
+    scores:        scoreboard(room),
   });
 
   startTurnTimer(io, room);
@@ -80,6 +84,8 @@ function startRound(io, room) {
 }
 
 function startTurnTimer(io, room) {
+  if (!room.players.length) return;   // guard: no players left
+
   const TURN_SECONDS = 10;
   let timeLeft = TURN_SECONDS;
 
@@ -93,6 +99,11 @@ function startTurnTimer(io, room) {
   });
 
   t.turnInterval = setInterval(() => {
+    if (!room.players.length) {   // all players disconnected mid-timer
+      clearInterval(t.turnInterval);
+      t.turnInterval = null;
+      return;
+    }
     timeLeft--;
     io.to(room.code).emit('timerUpdate', {
       timeLeft,
@@ -110,6 +121,7 @@ function startTurnTimer(io, room) {
 }
 
 function advanceTurn(io, room) {
+  if (!room.players.length) return;
   room.currentPlayerIndex =
     (room.currentPlayerIndex + 1) % room.players.length;
 
@@ -126,10 +138,10 @@ function scheduleHints(io, room) {
   const push = (delay, type, value) => {
     t.hintTimeouts.push(
       setTimeout(() => {
-        const r = room; // closure over live room
-        if (r.state !== 'playing') return;
-        r.hintsRevealed.push(type);
-        io.to(r.code).emit('hintRevealed', { type, value });
+        if (room.state !== 'playing') return;
+        // FIX: store { type, value } so getGameState() can replay them to late joiners
+        room.hintsRevealed.push({ type, value });
+        io.to(room.code).emit('hintRevealed', { type, value });
       }, delay)
     );
   };
@@ -205,7 +217,7 @@ function endRound(io, room) {
   });
   // Auto-start next round after 6 s
   setTimeout(() => {
-    if (room.state === 'playing') startRound(io, room);
+    if (room.state === 'playing' && room.players.length > 0) startRound(io, room);
   }, 6000);
 }
 
@@ -216,7 +228,7 @@ function skipMovie(io, room) {
     scores: scoreboard(room),
   });
   setTimeout(() => {
-    if (room.state === 'playing') startRound(io, room);
+    if (room.state === 'playing' && room.players.length > 0) startRound(io, room);
   }, 3000);
 }
 
@@ -224,4 +236,22 @@ function restartRound(io, room) {
   startRound(io, room);
 }
 
-module.exports = { startGame, handleGuess, skipMovie, restartRound, clearRoomTimers };
+/**
+ * getGameState — snapshot of the current round sent to players who join mid-game.
+ */
+function getGameState(room) {
+  return {
+    hints:         buildHints(room.currentMovie, room.guessedParts),
+    hostId:        room.hostId,
+    wrongGuesses:  room.wrongGuesses,
+    roundNumber:   room.roundNumber,
+    currentPlayer: room.players[room.currentPlayerIndex] || room.players[0],
+    scores:        room.players
+                     .slice()
+                     .sort((a, b) => b.score - a.score)
+                     .map(p => ({ id: p.id, name: p.name, score: p.score })),
+    hintsRevealed: room.hintsRevealed,   // [{ type, value }, ...]
+  };
+}
+
+module.exports = { startGame, handleGuess, skipMovie, restartRound, clearRoomTimers, getGameState };

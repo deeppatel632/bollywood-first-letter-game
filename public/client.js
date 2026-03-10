@@ -81,6 +81,9 @@ function showScreen(name) {
 
 // ═══ Initialise ══════════════════════════════════════════════
 function init() {
+  // FIX: io() with no arguments connects to the same origin that served the
+  // page — works correctly on localhost AND on deployed URLs (Render, Railway).
+  // Never hardcode ws://localhost:PORT here.
   state.socket = io();
   bindSocketEvents();
   bindUIEvents();
@@ -144,18 +147,23 @@ function bindSocketEvents() {
 
   s.on('connect', () => { state.myId = s.id; });
 
-  s.on('roomCreated',  onRoomCreated);
-  s.on('playerJoined', onPlayerJoined);
-  s.on('playerLeft',   onPlayerLeft);
-  s.on('roundStart',   onRoundStart);
-  s.on('timerUpdate',  onTimerUpdate);
-  s.on('turnChange',   onTurnChange);
-  s.on('guessResult',  onGuessResult);
-  s.on('hintRevealed', onHintRevealed);
-  s.on('roundEnd',     onRoundEnd);
-  s.on('movieSkipped', onMovieSkipped);
-  s.on('chatMessage',  onChatMessage);
-  s.on('gameError',    onGameError);
+  s.on('roomCreated',   onRoomCreated);
+  // FIX: added roomJoined — emitted only to the joining socket so they navigate
+  // to the waiting screen. Previously missing; joiners were stuck on the lobby.
+  s.on('roomJoined',    onRoomJoined);
+  s.on('playerJoined',  onPlayerJoined);
+  s.on('playerLeft',    onPlayerLeft);
+  s.on('roundStart',    onRoundStart);
+  // FIX: syncGameState handles the case where a player joins mid-game
+  s.on('syncGameState', onSyncGameState);
+  s.on('timerUpdate',   onTimerUpdate);
+  s.on('turnChange',    onTurnChange);
+  s.on('guessResult',   onGuessResult);
+  s.on('hintRevealed',  onHintRevealed);
+  s.on('roundEnd',      onRoundEnd);
+  s.on('movieSkipped',  onMovieSkipped);
+  s.on('chatMessage',   onChatMessage);
+  s.on('gameError',     onGameError);
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -191,14 +199,25 @@ function onRoomCreated(room) {
   showScreen('waiting');
 }
 
-function onPlayerJoined(room) {
+// FIX: new handler — server emits this ONLY to the socket that just joined.
+// Navigates the joining player to the waiting screen.
+function onRoomJoined(room) {
+  state.roomCode = room.code;
+  state.isHost   = room.hostId === state.myId;
+  renderWaitingRoom(room);
+  showScreen('waiting');
+}
+
+// FIX: playerJoined payload is now { room, newPlayer } — handle both fields.
+function onPlayerJoined({ room, newPlayer }) {
   if (screens.waiting.classList.contains('active')) {
     renderWaitingRoom(room);
   }
-  // Update host status in case of reconnect / host change
+  // Re-evaluate host status whenever the player list changes
   state.isHost = room.hostId === state.myId;
-  addChatSystem(`${room.players[room.players.length - 1].name} joined the room.`);
-  showNotif(`👋 ${room.players[room.players.length - 1].name} joined!`);
+  const name = (newPlayer && newPlayer.name) ? newPlayer.name : 'Someone';
+  addChatSystem(`${escHtml(name)} joined the room.`);
+  showNotif(`👋 ${name} joined!`);
 }
 
 function onPlayerLeft(room) {
@@ -207,7 +226,6 @@ function onPlayerLeft(room) {
   }
   updateScoreboard(room.players.map(p => ({ id: p.id, name: p.name, score: p.score })));
   addChatSystem('A player left the room.');
-  // Host may have changed
   state.isHost = room.hostId === state.myId;
   toggleHostControls();
 }
@@ -234,8 +252,10 @@ function onRoundStart(data) {
   // Scoreboard
   updateScoreboard(data.scores);
 
-  // Toggle host controls
-  state.isHost = (data.currentPlayer.id !== undefined); // re-checked via state
+  // FIX: correctly determine host status using hostId from server payload.
+  // Previously: state.isHost = (data.currentPlayer.id !== undefined) which is
+  // ALWAYS true — every player thought they were the host.
+  if (data.hostId) state.isHost = data.hostId === state.myId;
   toggleHostControls();
 
   // Hide overlay
@@ -246,6 +266,16 @@ function onRoundStart(data) {
   hideGuessToast();
 
   addChatSystem(`🎬 Round ${data.roundNumber} started!`);
+}
+
+// FIX: syncGameState — replays the full current state for players who join
+// a room while the game is already running.
+function onSyncGameState(data) {
+  onRoundStart(data);
+  // Re-apply already-revealed timed hints
+  if (Array.isArray(data.hintsRevealed)) {
+    data.hintsRevealed.forEach(({ type, value }) => onHintRevealed({ type, value }));
+  }
 }
 
 function onTimerUpdate(data) {
@@ -340,9 +370,21 @@ function onRoundEnd(data) {
 }
 
 function onMovieSkipped(data) {
-  showNotif(`⏭ Movie skipped: ${data.movie.movie}`);
-  addChatSystem(`⏭ Host skipped the movie. It was: ${data.movie.movie}`);
-  setTimeout(hideOverlay, 3000);
+  // Show the reveal overlay briefly then auto-dismiss
+  playRoundEnd();
+  showRoundEndOverlay(data);
+  addChatSystem(`⏭ Host skipped the movie. Answer: ${data.movie.movie}`);
+  let count = 3;
+  $('next-countdown').textContent = count;
+  clearInterval(state.overlayCountdown);
+  state.overlayCountdown = setInterval(() => {
+    count--;
+    if ($('next-countdown')) $('next-countdown').textContent = count;
+    if (count <= 0) {
+      clearInterval(state.overlayCountdown);
+      hideOverlay();
+    }
+  }, 1000);
 }
 
 function onChatMessage(data) {
