@@ -255,10 +255,12 @@ function onGuessResult(data) {
     showGuessToast(`✅ ${data.playerName} guessed ${labels[data.partGuessed]}! (+1)`, 'correct');
     addChatSystem(`✅ ${escHtml(data.playerName)} guessed "${escHtml(data.guess)}" — ${data.partGuessed}!`);
     revealHintCard(data.partGuessed, data.hints[data.partGuessed]);
+    animateCorrectCard(data.partGuessed);
   } else {
     playWrong();
     showGuessToast(`❌ ${data.playerName}: "${data.guess}" — wrong`, 'wrong');
     addChatSystem(`❌ ${escHtml(data.playerName)} guessed "${escHtml(data.guess)}" — wrong.`);
+    shakeGuessInput();
   }
 
   if (data.hints) syncHints(data.hints);
@@ -550,6 +552,18 @@ function showNotif(msg, type = '') {
   el.classList.remove('hidden');
   clearTimeout(notifTimer);
   notifTimer = setTimeout(() => el.classList.add('hidden'), 3000);
+}
+
+function animateCorrectCard(part) {
+  const card = $(`card-${part}`);
+  card.classList.add('correct-pop');
+  setTimeout(() => card.classList.remove('correct-pop'), 800);
+}
+
+function shakeGuessInput() {
+  const el = $('guess-input');
+  el.classList.add('shake');
+  setTimeout(() => el.classList.remove('shake'), 500);
 }
 
 function escHtml(str) {

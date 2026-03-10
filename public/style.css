@@ -414,6 +414,25 @@ input  { font-family: inherit; }
   from { opacity:0; transform:translate(-50%,-20px); }
   to   { opacity:1; transform:translate(-50%,0); }
 }
+@keyframes correctPop {
+  0%   { transform:scale(1); box-shadow:0 0 0 0 rgba(56,185,124,.4); }
+  40%  { transform:scale(1.08); box-shadow:0 0 20px 6px rgba(56,185,124,.35); }
+  100% { transform:scale(1); box-shadow:var(--shadow); }
+}
+.hint-card.correct-pop {
+  animation: correctPop .7s ease;
+}
+@keyframes shake {
+  0%,100% { transform:translateX(0); }
+  20%     { transform:translateX(-6px); }
+  40%     { transform:translateX(6px); }
+  60%     { transform:translateX(-4px); }
+  80%     { transform:translateX(4px); }
+}
+#guess-input.shake {
+  animation: shake .4s ease;
+  border-color: var(--primary) !important;
+}
 
 /* ═══ Responsive ════════════════════════════════════════════ */
 @media (max-width: 900px) {

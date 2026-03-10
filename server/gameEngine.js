@@ -25,6 +25,142 @@ function normalize(str) {
   return str.toLowerCase().trim().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ');
 }
 
+function removeSpaces(str) {
+  return str.replace(/\s+/g, '');
+}
+
+// Levenshtein distance
+function levenshtein(a, b) {
+  const m = a.length, n = b.length;
+  const dp = Array.from({ length: m + 1 }, () => new Array(n + 1));
+  for (let i = 0; i <= m; i++) dp[i][0] = i;
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      dp[i][j] = a[i - 1] === b[j - 1]
+        ? dp[i - 1][j - 1]
+        : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
+    }
+  }
+  return dp[m][n];
+}
+
+function similarity(a, b) {
+  const maxLen = Math.max(a.length, b.length);
+  if (maxLen === 0) return 1;
+  return 1 - levenshtein(a, b) / maxLen;
+}
+
+// Common Bollywood actor/movie aliases
+const ALIASES = {
+  'srk':              'shah rukh khan',
+  'shahrukh':         'shah rukh khan',
+  'shahrukh khan':    'shah rukh khan',
+  'king khan':        'shah rukh khan',
+  'sallu':            'salman khan',
+  'sallu bhai':       'salman khan',
+  'bhai':             'salman khan',
+  'aamir':            'aamir khan',
+  'mr perfectionist': 'aamir khan',
+  'hrithik':          'hrithik roshan',
+  'duggu':            'hrithik roshan',
+  'akki':             'akshay kumar',
+  'ranveer':          'ranveer singh',
+  'deepika':          'deepika padukone',
+  'dp':               'deepika padukone',
+  'alia':             'alia bhatt',
+  'pc':               'priyanka chopra',
+  'desi girl':        'priyanka chopra',
+  'katrina':          'katrina kaif',
+  'kat':              'katrina kaif',
+  'anushka':          'anushka sharma',
+  'kareena':          'kareena kapoor',
+  'bebo':             'kareena kapoor',
+  'kajol':            'kajol',
+  'vidya':            'vidya balan',
+  'rani':             'rani mukerji',
+  'madhuri':          'madhuri dixit',
+  'preity':           'preity zinta',
+  'shahid':           'shahid kapoor',
+  'sanju':            'sanjay dutt',
+  'sanju baba':       'sanjay dutt',
+  'ranbir':           'ranbir kapoor',
+  'saif':             'saif ali khan',
+  'abhishek':         'abhishek bachchan',
+  'amitabh':          'amitabh bachchan',
+  'big b':            'amitabh bachchan',
+  'varun':            'varun dhawan',
+  'tiger':            'tiger shroff',
+  'aishwarya':        'aishwarya rai',
+  'ash':              'aishwarya rai',
+  'sonam':            'sonam kapoor',
+  'kangana':          'kangana ranaut',
+  'irrfan':           'irrfan khan',
+  'nawaz':            'nawazuddin siddiqui',
+  'rajkumar':         'rajkumar rao',
+  'vicky':            'vicky kaushal',
+  'ayushmann':        'ayushmann khurrana',
+  'k3g':              'kabhi khushi kabhie gham',
+  'kkkg':             'kabhi khushi kabhie gham',
+  'ddlj':             'dilwale dulhania le jayenge',
+  'znmd':             'zindagi na milegi dobara',
+  'yjhd':             'yeh jawaani hai deewani',
+  '3 idiots':         'three idiots',
+  'pk':               'pk',
+  'rab ne':           'rab ne bana di jodi',
+  'dce':              'dil chahta hai',
+  'dch':              'dil chahta hai',
+  'jwm':              'jab we met',
+  'oso':              'om shanti om',
+  'cdi':              'chak de india',
+  'tzp':              'taare zameen par',
+};
+
+/**
+ * matchAnswer — flexible answer matching.
+ *   1. Exact normalized match → instant pass
+ *   2. Alias lookup → compare resolved alias to answer
+ *   3. Space-removed comparison
+ *   4. Partial (first-name / substring) match — guess must be >= 3 chars
+ *   5. Fuzzy similarity >= 0.7
+ */
+function matchAnswer(guess, answer) {
+  const ng = normalize(guess);
+  const na = normalize(answer);
+  if (!ng || !na) return false;
+
+  // 1. Exact
+  if (ng === na) return true;
+
+  // 2. Alias: resolve guess to canonical, then compare
+  const aliasResolved = ALIASES[ng];
+  if (aliasResolved && normalize(aliasResolved) === na) return true;
+
+  // 3. Space-removed comparison
+  if (removeSpaces(ng) === removeSpaces(na)) return true;
+
+  // 4. Partial match — guess matches the first word(s) of the answer
+  if (ng.length >= 3) {
+    // Answer starts with guess (e.g. "shah rukh" matches "shah rukh khan")
+    if (na.startsWith(ng + ' ') || na.startsWith(ng)) {
+      // Require at least 50% of the answer length to avoid single-word gaming
+      if (ng.length >= na.length * 0.5) return true;
+    }
+    // Without spaces
+    const ngNoSp = removeSpaces(ng);
+    const naNoSp = removeSpaces(na);
+    if (naNoSp.startsWith(ngNoSp) && ngNoSp.length >= naNoSp.length * 0.5) return true;
+  }
+
+  // 5. Fuzzy similarity >= 0.7
+  if (similarity(ng, na) >= 0.7) return true;
+
+  // Also fuzzy on space-removed versions
+  if (similarity(removeSpaces(ng), removeSpaces(na)) >= 0.7) return true;
+
+  return false;
+}
+
 function getRandomMovie(room) {
   let pool = movies.filter(m => !room.usedMovies.includes(m.movie));
   if (pool.length === 0) { room.usedMovies = []; pool = movies; }
@@ -180,17 +316,16 @@ function handleGuess(io, room, playerId, rawGuess) {
   // Selector cannot guess
   if (playerId === room.selectorId) return;
 
-  const guess = normalize(rawGuess);
   const movie = room.currentMovie;
   const gp    = room.guessedParts;
 
   let correct     = false;
   let partGuessed = null;
 
-  if      (!gp.movie   && guess === normalize(movie.movie))   { gp.movie   = true; partGuessed = 'movie';   correct = true; }
-  else if (!gp.hero    && guess === normalize(movie.hero))    { gp.hero    = true; partGuessed = 'hero';    correct = true; }
-  else if (!gp.heroine && guess === normalize(movie.heroine)) { gp.heroine = true; partGuessed = 'heroine'; correct = true; }
-  else if (!gp.song    && guess === normalize(movie.song))    { gp.song    = true; partGuessed = 'song';    correct = true; }
+  if      (!gp.movie   && matchAnswer(rawGuess, movie.movie))   { gp.movie   = true; partGuessed = 'movie';   correct = true; }
+  else if (!gp.hero    && matchAnswer(rawGuess, movie.hero))    { gp.hero    = true; partGuessed = 'hero';    correct = true; }
+  else if (!gp.heroine && matchAnswer(rawGuess, movie.heroine)) { gp.heroine = true; partGuessed = 'heroine'; correct = true; }
+  else if (!gp.song    && matchAnswer(rawGuess, movie.song))    { gp.song    = true; partGuessed = 'song';    correct = true; }
 
   if (correct) {
     player.score += 1;

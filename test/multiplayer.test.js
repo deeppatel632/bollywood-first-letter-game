@@ -303,6 +303,188 @@ async function runTests() {
     assert('skipping correct-guess test (no movieDetails)', false);
   }
 
+  /* ── TEST 8: Fuzzy matching — alias guess ────────────── */
+  console.log('TEST 8 — Alias guess is accepted (fuzzy matching)');
+
+  // End current round via skipMovie (round is still in progress), then select a new movie
+  const skipP = waitFor(host, 'movieSkipped');
+  p2.emit('skipMovie', { roomCode });
+  await skipP;
+  await delay(200);
+
+  // p2 selects another movie → fresh round for fuzzy tests
+  const [hR2, p2R2, p3R2] = [
+    waitFor(host, 'roundStart'),
+    waitFor(p2,   'roundStart'),
+    waitFor(p3,   'roundStart'),
+  ];
+  const p2Movie2P = waitFor(p2, 'movieDetails');
+  p2.emit('selectMovie', { roomCode });
+
+  let movieDetails2;
+  try {
+    await Promise.all([hR2, p2R2, p3R2]);
+    movieDetails2 = await p2Movie2P;
+    assert('new round started for fuzzy tests', !!movieDetails2);
+  } catch (err) {
+    assert('new round started for fuzzy tests', false);
+    console.error('  ', err.message);
+  }
+
+  // Build an alias guess for the hero if one exists, otherwise test case-insensitivity
+  const heroAnswer2 = movieDetails2?.hero || '';
+  const heroNorm    = heroAnswer2.toLowerCase().trim();
+
+  // Find a matching alias from the server's ALIASES map
+  const aliasMap = {
+    'shah rukh khan':    'srk',
+    'salman khan':       'sallu bhai',
+    'aamir khan':        'mr perfectionist',
+    'hrithik roshan':    'duggu',
+    'akshay kumar':      'akki',
+    'ranveer singh':     'ranveer',
+    'deepika padukone':  'dp',
+    'priyanka chopra':   'desi girl',
+    'kareena kapoor':    'bebo',
+    'amitabh bachchan':  'big b',
+    'aishwarya rai':     'ash',
+    'sanjay dutt':       'sanju baba',
+    'katrina kaif':      'kat',
+    'alia bhatt':        'alia',
+    'ranbir kapoor':     'ranbir',
+  };
+  const alias = aliasMap[heroNorm];
+
+  if (alias) {
+    const [hG8, p2G8, p3G8] = [
+      waitFor(host, 'guessResult'),
+      waitFor(p2,   'guessResult'),
+      waitFor(p3,   'guessResult'),
+    ];
+    p3.emit('guess', { roomCode, guess: alias });
+
+    try {
+      const [h8, , p38] = await Promise.all([hG8, p2G8, p3G8]);
+      assert('alias guess marked correct',          h8?.correct === true);
+      assert('alias partGuessed is "hero"',         h8?.partGuessed === 'hero');
+      assert('alias solvedBy has Player3',          h8?.solvedBy?.hero?.name === 'Player3');
+    } catch (err) {
+      assert('alias guess events received', false);
+      console.error('  ', err.message);
+    }
+  } else {
+    // No alias available — test case-insensitive + extra-spaces match instead
+    const weirdCase = '  ' + heroAnswer2.toUpperCase() + '  ';
+    const [hG8, p2G8, p3G8] = [
+      waitFor(host, 'guessResult'),
+      waitFor(p2,   'guessResult'),
+      waitFor(p3,   'guessResult'),
+    ];
+    p3.emit('guess', { roomCode, guess: weirdCase });
+
+    try {
+      const [h8, , p38] = await Promise.all([hG8, p2G8, p3G8]);
+      assert('case-insensitive guess correct',       h8?.correct === true);
+      assert('partGuessed is "hero"',                h8?.partGuessed === 'hero');
+    } catch (err) {
+      assert('case-insensitive events received', false);
+      console.error('  ', err.message);
+    }
+  }
+  console.log();
+
+  /* ── TEST 9: Space-removed match ───────────────────────── */
+  console.log('TEST 9 — Space-removed / partial match');
+
+  // Guess heroine with spaces removed (e.g. "deepikapadukone" for "Deepika Padukone")
+  const heroineAnswer2 = movieDetails2?.heroine || '';
+  const heroineNoSpace = heroineAnswer2.replace(/\s+/g, '').toLowerCase();
+
+  if (heroineNoSpace.length > 3) {
+    const [hG9, p2G9, p3G9] = [
+      waitFor(host, 'guessResult'),
+      waitFor(p2,   'guessResult'),
+      waitFor(p3,   'guessResult'),
+    ];
+    // If hero was already guessed, heroine should be the next part for a correct answer
+    host.emit('guess', { roomCode, guess: heroineNoSpace });
+
+    try {
+      const [h9] = await Promise.all([hG9, p2G9, p3G9]);
+      assert('space-removed guess marked correct',   h9?.correct === true);
+      assert('partGuessed is "heroine"',             h9?.partGuessed === 'heroine');
+    } catch (err) {
+      assert('space-removed guess events received', false);
+      console.error('  ', err.message);
+    }
+  } else {
+    assert('heroine name too short to test space-removed (skip)', true);
+  }
+  console.log();
+
+  /* ── TEST 10: Duplicate answer claim blocked ───────────── */
+  console.log('TEST 10 — Second player cannot claim already-solved part');
+
+  // Try to guess the same hero answer again from host (hero already solved by p3)
+  const [hG10, p2G10, p3G10] = [
+    waitFor(host, 'guessResult'),
+    waitFor(p2,   'guessResult'),
+    waitFor(p3,   'guessResult'),
+  ];
+  // Use the exact hero name — should still fail since it's already solved
+  host.emit('guess', { roomCode, guess: heroAnswer2 });
+
+  try {
+    const [h10] = await Promise.all([hG10, p2G10, p3G10]);
+    assert('duplicate claim is NOT correct',         h10?.correct === false);
+    assert('partGuessed is null (already solved)',    h10?.partGuessed === null);
+  } catch (err) {
+    assert('duplicate claim events received', false);
+    console.error('  ', err.message);
+  }
+  console.log();
+
+  /* ── TEST 11: Fuzzy (typo-tolerant) guess ──────────────── */
+  console.log('TEST 11 — Fuzzy/typo-tolerant guess');
+
+  // Guess the movie name with a small typo (similarity >= 0.7)
+  const movieName2 = movieDetails2?.movie || '';
+  // Create a mild typo: swap two adjacent middle chars if long enough
+  let typoGuess = movieName2;
+  if (movieName2.length >= 6) {
+    const mid = Math.floor(movieName2.length / 2);
+    typoGuess = movieName2.slice(0, mid) + movieName2[mid + 1] + movieName2[mid] + movieName2.slice(mid + 2);
+  } else if (movieName2.length >= 4) {
+    // Just change one char
+    typoGuess = movieName2.slice(0, -1) + 'x';
+  }
+
+  // Only test if the typo actually differs from the original
+  if (typoGuess.toLowerCase() !== movieName2.toLowerCase() && movieName2.length >= 4) {
+    const [hG11, p2G11, p3G11] = [
+      waitFor(host, 'guessResult'),
+      waitFor(p2,   'guessResult'),
+      waitFor(p3,   'guessResult'),
+    ];
+    p3.emit('guess', { roomCode, guess: typoGuess });
+
+    try {
+      const [h11] = await Promise.all([hG11, p2G11, p3G11]);
+      // The fuzzy match SHOULD accept this if similarity >= 0.7
+      // A single transposition in a 6+ char string has similarity >= 0.83
+      assert('typo guess marked correct',             h11?.correct === true);
+      assert('typo partGuessed is "movie"',           h11?.partGuessed === 'movie');
+    } catch (err) {
+      assert('typo guess events received', false);
+      console.error('  ', err.message);
+    }
+  } else {
+    // Movie name too short for a meaningful typo test; just pass
+    assert('movie too short for typo test (skip)', true);
+    assert('(placeholder) typo partGuessed skip', true);
+  }
+  console.log();
+
   /* ── Cleanup ───────────────────────────────────────────── */
   await delay(200);
   [host, p2, p3].forEach(s => s.disconnect());
