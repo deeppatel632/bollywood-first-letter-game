@@ -1,16 +1,18 @@
 /**
- * Automated multiplayer integration test for Bollywood First Letter Guess Game.
+ * Automated multiplayer integration tests for Bollywood First Letter Guess Game.
+ *
+ * New game flow (selector-based):
+ *   1. Host creates room             → roomCreated
+ *   2. Two players join              → roomJoined + playerJoined
+ *   3. Host starts game              → gameStarted (not roundStart yet)
+ *   4. Any player selects a movie    → roundStart to all + movieDetails to selector
+ *   5. Non-selector wrong guess      → guessResult { correct: false }
+ *   6. Selector guess is blocked     → no event emitted
+ *   7. Score sync                    → all see identical scores
  *
  * Usage:
- *   npm test           (requires server already running on PORT 3000)
- *   PORT=4000 npm test (custom port)
- *
- * Tests:
- *   1. Host creates a room           → receives roomCreated with code
- *   2. Two players join              → both receive roomJoined; host receives playerJoined × 2
- *   3. Host starts game              → all 3 sockets receive roundStart with hostId + hints
- *   4. Non-host makes wrong guess    → all 3 receive guessResult { correct: false, wrongGuesses > 0 }
- *   5. Score sync                    → all 3 receive identical scores array in guessResult
+ *   npm test           (requires server running on PORT 3000)
+ *   PORT=4000 npm test
  */
 
 'use strict';
@@ -19,7 +21,7 @@ const { io } = require('socket.io-client');
 
 const PORT    = process.env.PORT || 3000;
 const SERVER  = `http://localhost:${PORT}`;
-const TIMEOUT = 6000; // ms per assertion
+const TIMEOUT = 6000;
 
 /* ─── helpers ─────────────────────────────────────────────── */
 
@@ -41,16 +43,19 @@ function waitFor(socket, event, timeoutMs = TIMEOUT) {
     const t = setTimeout(() => {
       reject(new Error(`Timeout waiting for "${event}" on socket ${socket.id}`));
     }, timeoutMs);
-    socket.once(event, (data) => {
-      clearTimeout(t);
-      resolve(data);
-    });
+    socket.once(event, data => { clearTimeout(t); resolve(data); });
   });
 }
 
-function delay(ms) {
-  return new Promise(r => setTimeout(r, ms));
+/** Collects events (or returns null if timeout). */
+function collectEvent(socket, event, timeoutMs = 2000) {
+  return new Promise(resolve => {
+    const t = setTimeout(() => resolve(null), timeoutMs);
+    socket.once(event, data => { clearTimeout(t); resolve(data); });
+  });
 }
+
+function delay(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 function connect() {
   return new Promise((resolve, reject) => {
@@ -104,16 +109,12 @@ async function runTests() {
   /* ── TEST 2: Two players join ──────────────────────────── */
   console.log('TEST 2 — Two more players join the room');
 
-  // Host listens for both playerJoined events
-  const hostJoined1P  = waitFor(host, 'playerJoined');
-  // p2 listens for roomJoined
-  const p2JoinedP     = waitFor(p2, 'roomJoined');
-
+  const hostJoined1P = waitFor(host, 'playerJoined');
+  const p2JoinedP    = waitFor(p2, 'roomJoined');
   p2.emit('joinRoom', { roomCode, playerName: 'Player2' });
 
   try {
     const [p2Room, hostJoin1] = await Promise.all([p2JoinedP, hostJoined1P]);
-
     assert('p2 received roomJoined',              !!p2Room);
     assert('p2 roomJoined has correct code',       p2Room.code === roomCode);
     assert('p2 roomJoined has 2 players',          p2Room.players?.length === 2);
@@ -125,15 +126,12 @@ async function runTests() {
     console.error('  ', err.message);
   }
 
-  // p3 joins
   const hostJoined2P = waitFor(host, 'playerJoined');
   const p3JoinedP    = waitFor(p3, 'roomJoined');
-
   p3.emit('joinRoom', { roomCode, playerName: 'Player3' });
 
   try {
     const [p3Room, hostJoin2] = await Promise.all([p3JoinedP, hostJoined2P]);
-
     assert('p3 received roomJoined',              !!p3Room);
     assert('p3 roomJoined has 3 players',          p3Room.players?.length === 3);
     assert('host received playerJoined for p3',    !!hostJoin2);
@@ -144,46 +142,93 @@ async function runTests() {
   }
   console.log();
 
-  /* ── TEST 3: Host starts game ──────────────────────────── */
-  console.log('TEST 3 — Host starts the game');
+  /* ── TEST 3: Host starts game → gameStarted (not roundStart) ── */
+  console.log('TEST 3 — Host starts the game (gameStarted event, no roundStart yet)');
 
+  const [hostStartP, p2StartP, p3StartP] = [
+    waitFor(host, 'gameStarted'),
+    waitFor(p2,   'gameStarted'),
+    waitFor(p3,   'gameStarted'),
+  ];
+  host.emit('startGame', { roomCode });
+
+  try {
+    const [hostStart, p2Start, p3Start] = await Promise.all([hostStartP, p2StartP, p3StartP]);
+    assert('host received gameStarted',           !!hostStart);
+    assert('p2   received gameStarted',           !!p2Start);
+    assert('p3   received gameStarted',           !!p3Start);
+    assert('gameStarted includes hostId',          typeof hostStart?.hostId === 'string');
+    assert('hostId matches host socket',           hostStart?.hostId === host.id);
+    assert('scores array present',                 Array.isArray(hostStart?.scores));
+    assert('all scores are 0',                     hostStart?.scores.every(s => s.score === 0));
+  } catch (err) {
+    assert(`gameStarted received by all 3 within ${TIMEOUT}ms`, false);
+    console.error('  ', err.message);
+  }
+  console.log();
+
+  /* ── TEST 4: Player selects a movie → roundStart + movieDetails ── */
+  console.log('TEST 4 — Player selects a movie (roundStart + movieDetails)');
+
+  // p2 selects the movie → becomes the selector
   const [hostRoundP, p2RoundP, p3RoundP] = [
     waitFor(host, 'roundStart'),
     waitFor(p2,   'roundStart'),
     waitFor(p3,   'roundStart'),
   ];
-  host.emit('startGame', { roomCode });
+  const p2MovieP = waitFor(p2, 'movieDetails');
 
+  p2.emit('selectMovie', { roomCode });
+
+  let roundData;
+  let movieDetails;
   try {
     const [hostRound, p2Round, p3Round] = await Promise.all([hostRoundP, p2RoundP, p3RoundP]);
+    roundData = hostRound;
+    movieDetails = await p2MovieP;
 
     assert('host received roundStart',             !!hostRound);
     assert('p2   received roundStart',             !!p2Round);
     assert('p3   received roundStart',             !!p3Round);
-    assert('roundStart includes hostId',            typeof hostRound?.hostId === 'string');
-    assert('all sockets share same hostId',
-      hostRound?.hostId === p2Round?.hostId && p2Round?.hostId === p3Round?.hostId);
-    assert('hints object present',                  !!hostRound?.hints);
-    assert('hint hero is a single char or word',    typeof hostRound?.hints?.hero === 'string');
-    assert('scores array present',                  Array.isArray(hostRound?.scores));
+    assert('roundStart includes selectorId',        typeof hostRound?.selectorId === 'string');
+    assert('selectorId equals p2 socket id',        hostRound?.selectorId === p2.id);
+    assert('selectorName is Player2',               hostRound?.selectorName === 'Player2');
     assert('roundNumber is 1',                      hostRound?.roundNumber === 1);
-    assert('currentPlayer is present',              !!hostRound?.currentPlayer?.name);
+    assert('hints object present',                  !!hostRound?.hints);
+    assert('hint hero is a string',                 typeof hostRound?.hints?.hero === 'string');
+    assert('guessedParts present (all false)',       hostRound?.guessedParts && !hostRound.guessedParts.hero);
+    assert('solvedBy present (all null)',            hostRound?.solvedBy && hostRound.solvedBy.hero === null);
+    assert('timeLeft is 300',                       hostRound?.timeLeft === 300);
+    assert('scores array present',                  Array.isArray(hostRound?.scores));
+
+    // movieDetails sent only to selector
+    assert('selector (p2) received movieDetails',   !!movieDetails);
+    assert('movieDetails has movie name',            typeof movieDetails?.movie === 'string');
+    assert('movieDetails has hero',                  typeof movieDetails?.hero === 'string');
+    assert('movieDetails has heroine',               typeof movieDetails?.heroine === 'string');
+    assert('movieDetails has song',                  typeof movieDetails?.song === 'string');
   } catch (err) {
-    assert(`roundStart received by all 3 within ${TIMEOUT}ms`, false);
+    assert(`roundStart/movieDetails received within ${TIMEOUT}ms`, false);
     console.error('  ', err.message);
   }
+
+  // Verify host and p3 did NOT receive movieDetails
+  const hostMovieP = collectEvent(host, 'movieDetails', 1000);
+  const p3MovieP   = collectEvent(p3,   'movieDetails', 1000);
+  const [hostMovie, p3Movie] = await Promise.all([hostMovieP, p3MovieP]);
+  assert('host did NOT receive movieDetails',      hostMovie === null);
+  assert('p3 did NOT receive movieDetails',        p3Movie === null);
   console.log();
 
-  /* ── TEST 4 & 5: Wrong guess + score sync ──────────────── */
-  console.log('TEST 4 & 5 — Wrong guess + score synchronisation');
+  /* ── TEST 5: Wrong guess from non-selector ─────────────── */
+  console.log('TEST 5 — Wrong guess + score sync');
 
-  // Give a definitely-wrong guess from p2
   const [hostGuessP, p2GuessP, p3GuessP] = [
     waitFor(host, 'guessResult'),
     waitFor(p2,   'guessResult'),
     waitFor(p3,   'guessResult'),
   ];
-  p2.emit('guess', { roomCode, guess: 'ZZZZZZZ_WRONG_GUESS_12345' });
+  p3.emit('guess', { roomCode, guess: 'ZZZZZZZ_WRONG_GUESS_12345' });
 
   try {
     const [hostGuess, p2Guess, p3Guess] = await Promise.all([hostGuessP, p2GuessP, p3GuessP]);
@@ -191,23 +236,71 @@ async function runTests() {
     assert('host received guessResult',            !!hostGuess);
     assert('p2   received guessResult',            !!p2Guess);
     assert('p3   received guessResult',            !!p3Guess);
-    assert('guess is marked incorrect',             p2Guess?.correct === false);
-    assert('wrongGuesses incremented',              p2Guess?.wrongGuesses >= 1);
-    assert('all 3 see same wrongGuesses count',
-      hostGuess?.wrongGuesses === p2Guess?.wrongGuesses &&
-      p2Guess?.wrongGuesses  === p3Guess?.wrongGuesses);
+    assert('guess is marked incorrect',             p3Guess?.correct === false);
+    assert('partGuessed is null (wrong guess)',      p3Guess?.partGuessed === null);
+    assert('guessedParts still all false',           p3Guess?.guessedParts && !p3Guess.guessedParts.hero);
     assert('scores array present in all events',
       Array.isArray(hostGuess?.scores) &&
       Array.isArray(p2Guess?.scores)   &&
       Array.isArray(p3Guess?.scores));
-    // Verify score arrays are identical (synced)
     const scoresSame =
       JSON.stringify(hostGuess?.scores) === JSON.stringify(p2Guess?.scores) &&
       JSON.stringify(p2Guess?.scores)   === JSON.stringify(p3Guess?.scores);
     assert('all 3 sockets share identical scores array', scoresSame);
+    assert('all scores still 0 (wrong guess)',       hostGuess?.scores.every(s => s.score === 0));
   } catch (err) {
     assert(`guessResult received by all 3 within ${TIMEOUT}ms`, false);
     console.error('  ', err.message);
+  }
+  console.log();
+
+  /* ── TEST 6: Selector guess is blocked ─────────────────── */
+  console.log('TEST 6 — Selector\'s guess is blocked');
+
+  // p2 is the selector — their guess should be silently dropped
+  const blockedGuessP = collectEvent(host, 'guessResult', 2000);
+  p2.emit('guess', { roomCode, guess: movieDetails?.hero || 'anything' });
+  const blockedResult = await blockedGuessP;
+  assert('no guessResult emitted for selector guess', blockedResult === null);
+  console.log();
+
+  /* ── TEST 7: Correct guess → +1 score ──────────────────── */
+  console.log('TEST 7 — Correct guess awards +1 point');
+
+  // p3 guesses the actual hero name (from movieDetails)
+  const heroName = movieDetails?.hero;
+  if (heroName) {
+    const [hGP, p2GP, p3GP] = [
+      waitFor(host, 'guessResult'),
+      waitFor(p2,   'guessResult'),
+      waitFor(p3,   'guessResult'),
+    ];
+    p3.emit('guess', { roomCode, guess: heroName });
+
+    try {
+      const [hG, p2G, p3G] = await Promise.all([hGP, p2GP, p3GP]);
+      assert('guess is marked correct',              hG?.correct === true);
+      assert('partGuessed is "hero"',                hG?.partGuessed === 'hero');
+      assert('playerName is Player3',                hG?.playerName === 'Player3');
+      assert('guessedParts.hero is now true',        hG?.guessedParts?.hero === true);
+      assert('solvedBy.hero has Player3',            hG?.solvedBy?.hero?.name === 'Player3');
+      assert('hints.hero reveals full name',         hG?.hints?.hero === heroName);
+
+      // Find p3 in scores
+      const p3Score = hG?.scores?.find(s => s.name === 'Player3');
+      assert('Player3 score is now 1',               p3Score?.score === 1);
+
+      // Scores synced
+      const synced =
+        JSON.stringify(hG?.scores) === JSON.stringify(p2G?.scores) &&
+        JSON.stringify(p2G?.scores) === JSON.stringify(p3G?.scores);
+      assert('all 3 sockets share identical scores after correct guess', synced);
+    } catch (err) {
+      assert(`correct guess events received within ${TIMEOUT}ms`, false);
+      console.error('  ', err.message);
+    }
+  } else {
+    assert('skipping correct-guess test (no movieDetails)', false);
   }
 
   /* ── Cleanup ───────────────────────────────────────────── */

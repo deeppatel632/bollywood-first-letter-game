@@ -1,31 +1,33 @@
 /**
  * gameEngine.js
- * Core game loop: round start, turn timer, guess handling, hint scheduling.
+ *
+ * New game rules:
+ *   - Any player can select a movie for the round (the "selector").
+ *   - The selector cannot guess answers.
+ *   - Other players guess: hero, heroine, movie, song.
+ *   - Each correct guess = +1 point; each answer solved once only.
+ *   - Round timer = 5 minutes. Round ends when timer hits 0 OR all 4 answers solved.
  */
 
-const movies       = require('../data/movies.json');
-const scoreManager = require('./scoreManager');
+'use strict';
+
+const movies         = require('../data/movies.json');
 const { buildHints } = require('./hintSystem');
 
-// roomCode → { turnInterval, hintTimeouts[] }
+// roomCode → { interval, hintTimeouts[] }
 const timers = new Map();
+
+const ROUND_SECONDS = 300; // 5 minutes
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function normalize(str) {
-  return str
-    .toLowerCase()
-    .trim()
-    .replace(/[^a-z0-9\s]/g, '')
-    .replace(/\s+/g, ' ');
+  return str.toLowerCase().trim().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ');
 }
 
 function getRandomMovie(room) {
   let pool = movies.filter(m => !room.usedMovies.includes(m.movie));
-  if (pool.length === 0) {
-    room.usedMovies = [];
-    pool = movies;
-  }
+  if (pool.length === 0) { room.usedMovies = []; pool = movies; }
   return pool[Math.floor(Math.random() * pool.length)];
 }
 
@@ -39,147 +41,164 @@ function scoreboard(room) {
 function clearRoomTimers(roomCode) {
   const t = timers.get(roomCode);
   if (!t) return;
-  if (t.turnInterval)   clearInterval(t.turnInterval);
-  if (t.hintTimeouts)   t.hintTimeouts.forEach(x => clearTimeout(x));
+  if (t.interval)      clearInterval(t.interval);
+  if (t.hintTimeouts)  t.hintTimeouts.forEach(x => clearTimeout(x));
   timers.delete(roomCode);
 }
 
-// ─── Public API ───────────────────────────────────────────────────────────────
+// ─── Public API ──────────────────────────────────────────────────────────────
 
+/**
+ * startGame — host clicks Start. Resets scores, enters 'playing' state.
+ * Players then pick a movie via selectMovie.
+ */
 function startGame(io, room) {
-  room.state = 'playing';
+  room.state       = 'playing';
   room.roundNumber = 0;
-  room.currentPlayerIndex = 0;   // FIX: reset so every new game starts at player 0
-  room.usedMovies = [];           // fresh pool each game
+  room.usedMovies  = [];
+  room.selectorId  = null;
+  room.currentMovie = null;
   room.players.forEach(p => (p.score = 0));
-  startRound(io, room);
+
+  io.to(room.code).emit('gameStarted', {
+    hostId:  room.hostId,
+    players: room.players.map(p => ({ id: p.id, name: p.name, score: p.score })),
+    scores:  scoreboard(room),
+  });
 }
 
-function startRound(io, room) {
+/**
+ * selectMovie — a player picks a random movie for this round.
+ * They become the "selector" and cannot guess.
+ */
+function selectMovie(io, room, selectorId) {
+  if (room.state !== 'playing') return;
+
   clearRoomTimers(room.code);
+
+  const selector = room.players.find(p => p.id === selectorId);
+  if (!selector) return;
 
   const movie = getRandomMovie(room);
   room.usedMovies.push(movie.movie);
-  room.currentMovie      = movie;
-  room.wrongGuesses      = 0;
-  room.guessedParts      = { hero: false, heroine: false, song: false, movie: false };
-  room.hintsRevealed     = [];
-  room.roundStartTime    = Date.now();
-  room.roundNumber      += 1;
+
+  room.currentMovie   = movie;
+  room.selectorId     = selectorId;
+  room.guessedParts   = { hero: false, heroine: false, song: false, movie: false };
+  room.solvedBy       = { hero: null, heroine: null, song: null, movie: null };
+  room.hintsRevealed  = [];
+  room.roundStartTime = Date.now();
+  room.roundNumber   += 1;
+  room.timeLeft       = ROUND_SECONDS;
 
   const hints = buildHints(movie, room.guessedParts);
 
-  // FIX: include hostId so every client can correctly set state.isHost
   io.to(room.code).emit('roundStart', {
     hints,
-    hostId:        room.hostId,
-    wrongGuesses:  room.wrongGuesses,
-    roundNumber:   room.roundNumber,
-    currentPlayer: room.players[room.currentPlayerIndex],
-    scores:        scoreboard(room),
+    hostId:       room.hostId,
+    selectorId:   room.selectorId,
+    selectorName: selector.name,
+    roundNumber:  room.roundNumber,
+    timeLeft:     ROUND_SECONDS,
+    guessedParts: room.guessedParts,
+    solvedBy:     room.solvedBy,
+    scores:       scoreboard(room),
   });
 
-  startTurnTimer(io, room);
+  // Send full movie details only to the selector
+  const selectorSocket = io.sockets.sockets.get(selectorId);
+  if (selectorSocket) {
+    selectorSocket.emit('movieDetails', {
+      movie:    movie.movie,
+      hero:     movie.hero,
+      heroine:  movie.heroine,
+      song:     movie.song,
+      year:     movie.year,
+      director: movie.director,
+      plot:     movie.plot,
+    });
+  }
+
+  startRoundTimer(io, room);
   scheduleHints(io, room);
 }
 
-function startTurnTimer(io, room) {
-  if (!room.players.length) return;   // guard: no players left
+function startRoundTimer(io, room) {
+  const existing = timers.get(room.code);
+  const t = { interval: null, hintTimeouts: existing?.hintTimeouts || [] };
 
-  const TURN_SECONDS = 10;
-  let timeLeft = TURN_SECONDS;
+  room.timeLeft = ROUND_SECONDS;
 
-  const t = timers.get(room.code) || { hintTimeouts: [] };
-
-  if (t.turnInterval) clearInterval(t.turnInterval);
-
-  io.to(room.code).emit('timerUpdate', {
-    timeLeft,
-    currentPlayer: room.players[room.currentPlayerIndex],
-  });
-
-  t.turnInterval = setInterval(() => {
-    if (!room.players.length) {   // all players disconnected mid-timer
-      clearInterval(t.turnInterval);
-      t.turnInterval = null;
+  t.interval = setInterval(() => {
+    if (!room.players.length || room.state !== 'playing') {
+      clearInterval(t.interval);
+      t.interval = null;
       return;
     }
-    timeLeft--;
-    io.to(room.code).emit('timerUpdate', {
-      timeLeft,
-      currentPlayer: room.players[room.currentPlayerIndex],
-    });
+    room.timeLeft--;
+    io.to(room.code).emit('timerUpdate', { timeLeft: room.timeLeft });
 
-    if (timeLeft <= 0) {
-      clearInterval(t.turnInterval);
-      t.turnInterval = null;
-      advanceTurn(io, room);
+    if (room.timeLeft <= 0) {
+      clearInterval(t.interval);
+      t.interval = null;
+      endRound(io, room);
     }
   }, 1000);
 
   timers.set(room.code, t);
 }
 
-function advanceTurn(io, room) {
-  if (!room.players.length) return;
-  room.currentPlayerIndex =
-    (room.currentPlayerIndex + 1) % room.players.length;
-
-  io.to(room.code).emit('turnChange', {
-    currentPlayer: room.players[room.currentPlayerIndex],
-  });
-
-  startTurnTimer(io, room);
-}
-
 function scheduleHints(io, room) {
-  const t = timers.get(room.code) || { hintTimeouts: [], turnInterval: null };
+  const t = timers.get(room.code) || { interval: null, hintTimeouts: [] };
 
   const push = (delay, type, value) => {
     t.hintTimeouts.push(
       setTimeout(() => {
-        if (room.state !== 'playing') return;
-        // FIX: store { type, value } so getGameState() can replay them to late joiners
+        if (room.state !== 'playing' || !room.currentMovie) return;
         room.hintsRevealed.push({ type, value });
         io.to(room.code).emit('hintRevealed', { type, value });
       }, delay)
     );
   };
 
-  push(20000, 'year',     room.currentMovie.year);
-  push(30000, 'director', room.currentMovie.director);
-  push(40000, 'plot',     room.currentMovie.plot);
+  // Reveal extra hints at 1 min, 2 min, 3 min
+  push(60000,  'year',     room.currentMovie.year);
+  push(120000, 'director', room.currentMovie.director);
+  push(180000, 'plot',     room.currentMovie.plot);
 
   timers.set(room.code, t);
 }
 
+/**
+ * handleGuess — any player except the selector can guess.
+ * +1 point per correct answer. Each answer solved once only.
+ */
 function handleGuess(io, room, playerId, rawGuess) {
   const player = room.players.find(p => p.id === playerId);
-  if (!player || room.state !== 'playing') return;
+  if (!player || room.state !== 'playing' || !room.currentMovie) return;
 
-  const guess  = normalize(rawGuess);
-  const movie  = room.currentMovie;
-  const gp     = room.guessedParts;
+  // Selector cannot guess
+  if (playerId === room.selectorId) return;
 
-  let correct    = false;
+  const guess = normalize(rawGuess);
+  const movie = room.currentMovie;
+  const gp    = room.guessedParts;
+
+  let correct     = false;
   let partGuessed = null;
-  let delta       = 0;
 
-  if (!gp.movie   && guess === normalize(movie.movie))   { gp.movie   = true; partGuessed = 'movie';   correct = true; }
+  if      (!gp.movie   && guess === normalize(movie.movie))   { gp.movie   = true; partGuessed = 'movie';   correct = true; }
   else if (!gp.hero    && guess === normalize(movie.hero))    { gp.hero    = true; partGuessed = 'hero';    correct = true; }
   else if (!gp.heroine && guess === normalize(movie.heroine)) { gp.heroine = true; partGuessed = 'heroine'; correct = true; }
   else if (!gp.song    && guess === normalize(movie.song))    { gp.song    = true; partGuessed = 'song';    correct = true; }
 
   if (correct) {
-    delta = scoreManager.addScore(player, partGuessed);
-  } else {
-    delta = scoreManager.addScore(player, 'wrong');
-    room.wrongGuesses = Math.min(9, room.wrongGuesses + 1);
+    player.score += 1;
+    room.solvedBy[partGuessed] = { id: player.id, name: player.name };
   }
 
-  const hints    = buildHints(movie, gp);
-  const allDone  = gp.hero && gp.heroine && gp.movie && gp.song;
-  const livesOut = room.wrongGuesses >= 9;
+  const hints   = buildHints(movie, gp);
+  const allDone = gp.hero && gp.heroine && gp.movie && gp.song;
 
   io.to(room.code).emit('guessResult', {
     playerId,
@@ -187,71 +206,76 @@ function handleGuess(io, room, playerId, rawGuess) {
     guess:        rawGuess,
     correct,
     partGuessed,
-    delta,
     hints,
-    wrongGuesses: room.wrongGuesses,
+    guessedParts: gp,
+    solvedBy:     room.solvedBy,
     scores:       scoreboard(room),
   });
 
-  if (allDone || livesOut) {
+  if (allDone) {
     endRound(io, room);
-    return;
-  }
-
-  // Correct guesser gets an immediate fresh turn
-  if (correct) {
-    const t = timers.get(room.code);
-    if (t && t.turnInterval) {
-      clearInterval(t.turnInterval);
-      t.turnInterval = null;
-    }
-    startTurnTimer(io, room);
   }
 }
 
 function endRound(io, room) {
   clearRoomTimers(room.code);
+
   io.to(room.code).emit('roundEnd', {
-    movie:  room.currentMovie,
-    scores: scoreboard(room),
+    movie:        room.currentMovie,
+    guessedParts: room.guessedParts,
+    solvedBy:     room.solvedBy,
+    scores:       scoreboard(room),
   });
-  // Auto-start next round after 6 s
-  setTimeout(() => {
-    if (room.state === 'playing' && room.players.length > 0) startRound(io, room);
-  }, 6000);
+
+  room.currentMovie = null;
+  room.selectorId   = null;
 }
 
 function skipMovie(io, room) {
   clearRoomTimers(room.code);
+
   io.to(room.code).emit('movieSkipped', {
     movie:  room.currentMovie,
     scores: scoreboard(room),
   });
-  setTimeout(() => {
-    if (room.state === 'playing' && room.players.length > 0) startRound(io, room);
-  }, 3000);
-}
 
-function restartRound(io, room) {
-  startRound(io, room);
+  room.currentMovie = null;
+  room.selectorId   = null;
 }
 
 /**
- * getGameState — snapshot of the current round sent to players who join mid-game.
+ * getGameState — snapshot for mid-game joiners.
  */
 function getGameState(room) {
+  if (!room.currentMovie) {
+    return {
+      phase:       'selecting',
+      hostId:      room.hostId,
+      scores:      scoreboard(room),
+      roundNumber: room.roundNumber,
+    };
+  }
   return {
+    phase:         'guessing',
     hints:         buildHints(room.currentMovie, room.guessedParts),
     hostId:        room.hostId,
-    wrongGuesses:  room.wrongGuesses,
+    selectorId:    room.selectorId,
+    selectorName:  (room.players.find(p => p.id === room.selectorId) || {}).name || '?',
     roundNumber:   room.roundNumber,
-    currentPlayer: room.players[room.currentPlayerIndex] || room.players[0],
-    scores:        room.players
-                     .slice()
-                     .sort((a, b) => b.score - a.score)
-                     .map(p => ({ id: p.id, name: p.name, score: p.score })),
-    hintsRevealed: room.hintsRevealed,   // [{ type, value }, ...]
+    timeLeft:      room.timeLeft || 0,
+    guessedParts:  room.guessedParts,
+    solvedBy:      room.solvedBy,
+    scores:        scoreboard(room),
+    hintsRevealed: room.hintsRevealed || [],
   };
 }
 
-module.exports = { startGame, handleGuess, skipMovie, restartRound, clearRoomTimers, getGameState };
+module.exports = {
+  startGame,
+  selectMovie,
+  handleGuess,
+  endRound,
+  skipMovie,
+  getGameState,
+  clearRoomTimers,
+};

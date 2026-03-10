@@ -1,20 +1,11 @@
 /**
  * scoreManager.js
- * Pure helper — adds/subtracts points from a player object.
+ * Each correct guess = +1 point.
  */
 
-const POINTS = {
-  movie:   20,
-  hero:    10,
-  heroine: 10,
-  song:    10,
-  wrong:  -2,
-};
-
-function addScore(player, type) {
-  const delta = POINTS[type] ?? 0;
-  player.score = Math.max(0, (player.score || 0) + delta);
-  return delta;
+function addScore(player) {
+  player.score = (player.score || 0) + 1;
+  return 1;
 }
 
-module.exports = { addScore, POINTS };
+module.exports = { addScore };

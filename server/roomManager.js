@@ -21,15 +21,16 @@ function createRoom(hostId, hostName) {
     code,
     hostId,
     players: [{ id: hostId, name: hostName, score: 0 }],
-    state: 'waiting',          // 'waiting' | 'playing'
+    state: 'waiting',            // 'waiting' | 'playing'
     currentMovie: null,
-    currentPlayerIndex: 0,
-    wrongGuesses: 0,           // 0-9; 9 = BOLLYWOOD wiped out
+    selectorId: null,            // who picked the movie this round
     guessedParts: { hero: false, heroine: false, song: false, movie: false },
+    solvedBy: { hero: null, heroine: null, song: null, movie: null },
     hintsRevealed: [],
     roundNumber: 0,
     usedMovies: [],
     roundStartTime: null,
+    timeLeft: 0,
   };
 
   rooms.set(code, room);
@@ -76,9 +77,9 @@ function removePlayer(playerId) {
       room.hostId = room.players[0].id;
     }
 
-    // Keep currentPlayerIndex in bounds
-    if (room.currentPlayerIndex >= room.players.length) {
-      room.currentPlayerIndex = 0;
+    // If the selector left, clear the selector
+    if (room.selectorId === playerId) {
+      room.selectorId = null;
     }
 
     return { roomCode: code };

@@ -1,197 +1,127 @@
 /* ─────────────────────────────────────────────────────────────
    Bollywood First Letter Guess Game — Client
    ───────────────────────────────────────────────────────────── */
-
 'use strict';
 
 // ═══ State ═══════════════════════════════════════════════════
 const state = {
-  socket:               null,
-  roomCode:             null,
-  playerName:           null,
-  isHost:               false,
-  myId:                 null,
-  currentPlayerName:    null,
-  wrongGuesses:         0,
-  timerMax:             10,
-  timerLeft:            10,
-  overlayCountdown:     null,
-  guessToastTimer:      null,
+  socket:            null,
+  roomCode:          null,
+  playerName:        null,
+  isHost:            false,
+  isSelector:        false,
+  myId:              null,
+  roundActive:       false,
+  timerMax:          300,
+  overlayCountdown:  null,
+  guessToastTimer:   null,
 };
 
-// ═══ Audio (Web Audio API) ═══════════════════════════════════
+// ═══ Audio ═══════════════════════════════════════════════════
 const AudioCtx = window.AudioContext || window.webkitAudioContext;
 let audioCtx = null;
+function getAudioCtx() { if (!audioCtx) audioCtx = new AudioCtx(); return audioCtx; }
 
-function getAudioCtx() {
-  if (!audioCtx) audioCtx = new AudioCtx();
-  return audioCtx;
-}
-
-function playTone(freq, duration, type = 'sine', gain = 0.18) {
+function playTone(freq, dur, type = 'sine', gain = 0.18) {
   try {
-    const ctx  = getAudioCtx();
-    const osc  = ctx.createOscillator();
-    const vol  = ctx.createGain();
-    osc.connect(vol);
-    vol.connect(ctx.destination);
-    osc.type      = type;
-    osc.frequency.setValueAtTime(freq, ctx.currentTime);
+    const ctx = getAudioCtx(), osc = ctx.createOscillator(), vol = ctx.createGain();
+    osc.connect(vol); vol.connect(ctx.destination);
+    osc.type = type; osc.frequency.setValueAtTime(freq, ctx.currentTime);
     vol.gain.setValueAtTime(gain, ctx.currentTime);
-    vol.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + duration);
-    osc.start(ctx.currentTime);
-    osc.stop(ctx.currentTime + duration);
+    vol.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + dur);
+    osc.start(ctx.currentTime); osc.stop(ctx.currentTime + dur);
   } catch (_) {}
 }
+function playSuccess() { [523,659,784,1047].forEach((f,i) => setTimeout(() => playTone(f,.18,'sine',.2), i*80)); }
+function playWrong()   { playTone(180,.35,'sawtooth',.14); }
+function playTick()    { playTone(880,.06,'square',.07); }
+function playRoundEnd(){ [784,659,523,392].forEach((f,i) => setTimeout(() => playTone(f,.22,'sine',.15), i*90)); }
 
-function playSuccess() {
-  [523, 659, 784, 1047].forEach((f, i) => setTimeout(() => playTone(f, 0.18, 'sine', 0.2), i * 80));
-}
-
-function playWrong() {
-  playTone(180, 0.35, 'sawtooth', 0.14);
-}
-
-function playTick() {
-  playTone(880, 0.06, 'square', 0.07);
-}
-
-function playRoundEnd() {
-  [784, 659, 523, 392].forEach((f, i) => setTimeout(() => playTone(f, 0.22, 'sine', 0.15), i * 90));
-}
-
-function playHintReveal() {
-  [440, 554, 659].forEach((f, i) => setTimeout(() => playTone(f, 0.14, 'sine', 0.13), i * 70));
-}
-
-// ═══ DOM references ══════════════════════════════════════════
+// ═══ DOM refs ════════════════════════════════════════════════
 const $ = id => document.getElementById(id);
-
 const screens = {
   lobby:   $('lobby-screen'),
   waiting: $('waiting-screen'),
   game:    $('game-screen'),
 };
-
-// ═══ Screen management ═══════════════════════════════════════
 function showScreen(name) {
   Object.values(screens).forEach(s => s.classList.remove('active'));
   screens[name].classList.add('active');
 }
 
-// ═══ Initialise ══════════════════════════════════════════════
+// ═══ Init ════════════════════════════════════════════════════
 function init() {
-  // FIX: io() with no arguments connects to the same origin that served the
-  // page — works correctly on localhost AND on deployed URLs (Render, Railway).
-  // Never hardcode ws://localhost:PORT here.
   state.socket = io();
   bindSocketEvents();
   bindUIEvents();
 }
 
-// ═══════════════════════════════════════════════════════════════
-//  UI EVENT BINDINGS
-// ═══════════════════════════════════════════════════════════════
+// ═══ UI Events ═══════════════════════════════════════════════
 function bindUIEvents() {
-  // Tab switching
   $('tab-create').addEventListener('click', () => switchTab('create'));
   $('tab-join').addEventListener('click',   () => switchTab('join'));
-
-  // Lobby actions
   $('btn-create').addEventListener('click', createRoom);
   $('btn-join').addEventListener('click',   joinRoom);
-
-  // Enter key support in lobby inputs
-  ['create-name'].forEach(id => {
-    $(id).addEventListener('keydown', e => { if (e.key === 'Enter') createRoom(); });
-  });
-  ['join-name', 'join-code'].forEach(id => {
-    $(id).addEventListener('keydown', e => { if (e.key === 'Enter') joinRoom(); });
-  });
-
-  // Waiting room
+  ['create-name'].forEach(id => $(id).addEventListener('keydown', e => { if (e.key === 'Enter') createRoom(); }));
+  ['join-name','join-code'].forEach(id => $(id).addEventListener('keydown', e => { if (e.key === 'Enter') joinRoom(); }));
   $('btn-copy').addEventListener('click', copyRoomCode);
-  $('btn-start-game').addEventListener('click', () => {
-    state.socket.emit('startGame', { roomCode: state.roomCode });
-  });
-
-  // Game controls
+  $('btn-start-game').addEventListener('click', () => state.socket.emit('startGame', { roomCode: state.roomCode }));
   $('btn-guess').addEventListener('click', submitGuess);
   $('guess-input').addEventListener('keydown', e => { if (e.key === 'Enter') submitGuess(); });
-
-  $('btn-skip').addEventListener('click', () => {
-    state.socket.emit('skipMovie', { roomCode: state.roomCode });
-  });
-  $('btn-restart').addEventListener('click', () => {
-    state.socket.emit('restartRound', { roomCode: state.roomCode });
-  });
-
-  // Chat
+  $('btn-select-movie').addEventListener('click', () => state.socket.emit('selectMovie', { roomCode: state.roomCode }));
+  $('btn-skip').addEventListener('click', () => state.socket.emit('skipMovie', { roomCode: state.roomCode }));
   $('btn-chat-send').addEventListener('click', sendChat);
   $('chat-input').addEventListener('keydown', e => { if (e.key === 'Enter') sendChat(); });
 }
 
 function switchTab(tab) {
-  ['create', 'join'].forEach(t => {
+  ['create','join'].forEach(t => {
     $(`tab-${t}`).classList.toggle('active', t === tab);
     $(`panel-${t}`).classList.toggle('active', t === tab);
   });
   $('lobby-error').textContent = '';
 }
 
-// ═══════════════════════════════════════════════════════════════
-//  SOCKET EVENT BINDINGS
-// ═══════════════════════════════════════════════════════════════
+// ═══ Socket Events ═══════════════════════════════════════════
 function bindSocketEvents() {
   const s = state.socket;
-
-  s.on('connect', () => { state.myId = s.id; });
-
-  s.on('roomCreated',   onRoomCreated);
-  // FIX: added roomJoined — emitted only to the joining socket so they navigate
-  // to the waiting screen. Previously missing; joiners were stuck on the lobby.
-  s.on('roomJoined',    onRoomJoined);
-  s.on('playerJoined',  onPlayerJoined);
-  s.on('playerLeft',    onPlayerLeft);
-  s.on('roundStart',    onRoundStart);
-  // FIX: syncGameState handles the case where a player joins mid-game
-  s.on('syncGameState', onSyncGameState);
-  s.on('timerUpdate',   onTimerUpdate);
-  s.on('turnChange',    onTurnChange);
-  s.on('guessResult',   onGuessResult);
-  s.on('hintRevealed',  onHintRevealed);
-  s.on('roundEnd',      onRoundEnd);
-  s.on('movieSkipped',  onMovieSkipped);
-  s.on('chatMessage',   onChatMessage);
-  s.on('gameError',     onGameError);
+  s.on('connect',        () => { state.myId = s.id; });
+  s.on('roomCreated',    onRoomCreated);
+  s.on('roomJoined',     onRoomJoined);
+  s.on('playerJoined',   onPlayerJoined);
+  s.on('playerLeft',     onPlayerLeft);
+  s.on('gameStarted',    onGameStarted);
+  s.on('roundStart',     onRoundStart);
+  s.on('movieDetails',   onMovieDetails);
+  s.on('syncGameState',  onSyncGameState);
+  s.on('timerUpdate',    onTimerUpdate);
+  s.on('guessResult',    onGuessResult);
+  s.on('hintRevealed',   onHintRevealed);
+  s.on('roundEnd',       onRoundEnd);
+  s.on('movieSkipped',   onMovieSkipped);
+  s.on('chatMessage',    onChatMessage);
+  s.on('gameError',      onGameError);
 }
 
-// ═══════════════════════════════════════════════════════════════
-//  LOBBY ACTIONS
-// ═══════════════════════════════════════════════════════════════
+// ═══ Lobby ═══════════════════════════════════════════════════
 function createRoom() {
   const name = $('create-name').value.trim();
-  if (!name) { showLobbyError('Please enter your name.'); return; }
+  if (!name) return showLobbyError('Please enter your name.');
   state.playerName = name;
   state.socket.emit('createRoom', { playerName: name });
 }
-
 function joinRoom() {
   const name = $('join-name').value.trim();
   const code = $('join-code').value.trim().toUpperCase();
-  if (!name) { showLobbyError('Please enter your name.'); return; }
-  if (!code || code.length < 4) { showLobbyError('Please enter a valid room code.'); return; }
+  if (!name) return showLobbyError('Please enter your name.');
+  if (!code || code.length < 4) return showLobbyError('Please enter a valid room code.');
   state.playerName = name;
   state.socket.emit('joinRoom', { roomCode: code, playerName: name });
 }
+function showLobbyError(msg) { $('lobby-error').textContent = msg; }
 
-function showLobbyError(msg) {
-  $('lobby-error').textContent = msg;
-}
+// ═══ Socket Handlers ═════════════════════════════════════════
 
-// ═══════════════════════════════════════════════════════════════
-//  SOCKET HANDLERS
-// ═══════════════════════════════════════════════════════════════
 function onRoomCreated(room) {
   state.roomCode = room.code;
   state.isHost   = true;
@@ -199,8 +129,6 @@ function onRoomCreated(room) {
   showScreen('waiting');
 }
 
-// FIX: new handler — server emits this ONLY to the socket that just joined.
-// Navigates the joining player to the waiting screen.
 function onRoomJoined(room) {
   state.roomCode = room.code;
   state.isHost   = room.hostId === state.myId;
@@ -208,137 +136,141 @@ function onRoomJoined(room) {
   showScreen('waiting');
 }
 
-// FIX: playerJoined payload is now { room, newPlayer } — handle both fields.
 function onPlayerJoined({ room, newPlayer }) {
-  if (screens.waiting.classList.contains('active')) {
-    renderWaitingRoom(room);
-  }
-  // Re-evaluate host status whenever the player list changes
+  if (screens.waiting.classList.contains('active')) renderWaitingRoom(room);
   state.isHost = room.hostId === state.myId;
-  const name = (newPlayer && newPlayer.name) ? newPlayer.name : 'Someone';
+  const name = newPlayer?.name || 'Someone';
   addChatSystem(`${escHtml(name)} joined the room.`);
   showNotif(`👋 ${name} joined!`);
+  // update leaderboard if game screen is active
+  if (screens.game.classList.contains('active')) {
+    updateScoreboard(room.players.map(p => ({ id: p.id, name: p.name, score: p.score })));
+  }
 }
 
 function onPlayerLeft(room) {
-  if (screens.waiting.classList.contains('active')) {
-    renderWaitingRoom(room);
-  }
-  updateScoreboard(room.players.map(p => ({ id: p.id, name: p.name, score: p.score })));
-  addChatSystem('A player left the room.');
+  if (screens.waiting.classList.contains('active')) renderWaitingRoom(room);
   state.isHost = room.hostId === state.myId;
-  toggleHostControls();
+  addChatSystem('A player left the room.');
+  if (screens.game.classList.contains('active')) {
+    updateScoreboard(room.players.map(p => ({ id: p.id, name: p.name, score: p.score })));
+  }
+}
+
+function onGameStarted(data) {
+  showScreen('game');
+  $('round-badge').textContent     = 'Round 0';
+  $('room-code-badge').textContent = state.roomCode;
+  state.isHost = data.hostId === state.myId;
+  state.roundActive = false;
+  state.isSelector  = false;
+  updateScoreboard(data.scores);
+  resetHints();
+  resetSolvedTracker();
+  showSelectMovieButton(true);
+  hideGuessArea(false);
+  $('selector-name').textContent = '—';
+  $('timer-count').textContent = '5:00';
+  hideOverlay();
+  addChatSystem('🎮 Game started! Anyone can pick a movie.');
 }
 
 function onRoundStart(data) {
   showScreen('game');
+  state.roundActive = true;
+  state.isSelector  = data.selectorId === state.myId;
+  state.isHost      = data.hostId === state.myId;
+
   $('round-badge').textContent     = `Round ${data.roundNumber}`;
   $('room-code-badge').textContent = state.roomCode;
+  $('selector-name').textContent   = data.selectorName;
 
-  // Reset BOLLYWOOD lives
-  state.wrongGuesses = 0;
-  renderBollywoodLives(0);
-
-  // Update hints
-  renderHints(data.hints, { hero: false, heroine: false, song: false, movie: false });
-
-  // Clear extra hints
-  ['hint-year', 'hint-director', 'hint-plot'].forEach(id => $(id).classList.add('hidden'));
-
-  // Set current player
-  state.currentPlayerName = data.currentPlayer.name;
-  $('current-turn-name').textContent = data.currentPlayer.name;
-
-  // Scoreboard
+  resetHints();
+  renderHints(data.hints, data.guessedParts);
+  resetSolvedTracker();
+  updateSolvedTracker(data.guessedParts, data.solvedBy);
   updateScoreboard(data.scores);
+  updateTimer(data.timeLeft);
 
-  // FIX: correctly determine host status using hostId from server payload.
-  // Previously: state.isHost = (data.currentPlayer.id !== undefined) which is
-  // ALWAYS true — every player thought they were the host.
-  if (data.hostId) state.isHost = data.hostId === state.myId;
-  toggleHostControls();
+  // Hide select button, show guess area (or movie details for selector)
+  showSelectMovieButton(false);
+  if (state.isSelector) {
+    hideGuessArea(true);
+    $('selector-controls').classList.remove('hidden');
+  } else {
+    hideGuessArea(false);
+    $('selector-controls').classList.add('hidden');
+    $('movie-details-bar').classList.add('hidden');
+  }
 
-  // Hide overlay
+  // Selector OR host can skip
+  if (state.isSelector || state.isHost) {
+    $('selector-controls').classList.remove('hidden');
+  }
+
   hideOverlay();
-
-  // Reset guess input
   $('guess-input').value = '';
   hideGuessToast();
-
-  addChatSystem(`🎬 Round ${data.roundNumber} started!`);
+  addChatSystem(`🎬 Round ${data.roundNumber} — ${escHtml(data.selectorName)} selected a movie!`);
 }
 
-// FIX: syncGameState — replays the full current state for players who join
-// a room while the game is already running.
+function onMovieDetails(data) {
+  // Only the selector receives this
+  const bar = $('movie-details-bar');
+  bar.classList.remove('hidden');
+  $('detail-movie').textContent   = `🎬 ${data.movie}`;
+  $('detail-hero').textContent    = `🎭 ${data.hero}`;
+  $('detail-heroine').textContent = `💃 ${data.heroine}`;
+  $('detail-song').textContent    = `🎵 ${data.song}`;
+}
+
 function onSyncGameState(data) {
+  showScreen('game');
+  $('room-code-badge').textContent = state.roomCode;
+  state.isHost = data.hostId === state.myId;
+
+  if (data.phase === 'selecting') {
+    state.roundActive = false;
+    $('round-badge').textContent = `Round ${data.roundNumber}`;
+    updateScoreboard(data.scores);
+    showSelectMovieButton(true);
+    return;
+  }
+  // phase === 'guessing'
   onRoundStart(data);
-  // Re-apply already-revealed timed hints
   if (Array.isArray(data.hintsRevealed)) {
     data.hintsRevealed.forEach(({ type, value }) => onHintRevealed({ type, value }));
   }
 }
 
 function onTimerUpdate(data) {
-  const t = data.timeLeft;
-  state.timerLeft = t;
-  $('timer-count').textContent = t;
-
-  // SVG arc: circumference of r=26 circle ≈ 163.4
-  const C      = 163.4;
-  const offset = C - (C * (t / state.timerMax));
-  const arc    = $('timer-arc');
-  arc.style.strokeDashoffset = offset;
-
-  const isUrgent = t <= 3;
-  $('timer-count').classList.toggle('urgent', isUrgent);
-  arc.classList.toggle('urgent', isUrgent);
-
-  if (t <= 3 && t > 0) playTick();
-
-  // Also show whose turn it is
-  if (data.currentPlayer) {
-    state.currentPlayerName = data.currentPlayer.name;
-    $('current-turn-name').textContent = data.currentPlayer.name;
-  }
-}
-
-function onTurnChange(data) {
-  state.currentPlayerName = data.currentPlayer.name;
-  $('current-turn-name').textContent = data.currentPlayer.name;
-  addChatSystem(`⏩ ${data.currentPlayer.name}'s turn.`);
+  updateTimer(data.timeLeft);
+  if (data.timeLeft <= 10 && data.timeLeft > 0) playTick();
 }
 
 function onGuessResult(data) {
   if (data.correct) {
     playSuccess();
-    const labels = { movie: '🎬 Movie', hero: '🎭 Hero', heroine: '💃 Heroine', song: '🎵 Song' };
-    showGuessToast(
-      `✅ ${data.playerName} guessed the ${labels[data.partGuessed] || data.partGuessed}! (+${data.delta})`,
-      'correct'
-    );
-    addChatSystem(`✅ ${data.playerName} guessed "${data.guess}" correctly! (+${data.delta} pts)`);
-
-    // Reveal card
-    revealHintCard(data.partGuessed, getFullValueForPart(data.partGuessed, data.hints));
+    const labels = { movie:'🎬 Movie', hero:'🎭 Hero', heroine:'💃 Heroine', song:'🎵 Song' };
+    showGuessToast(`✅ ${data.playerName} guessed ${labels[data.partGuessed]}! (+1)`, 'correct');
+    addChatSystem(`✅ ${escHtml(data.playerName)} guessed "${escHtml(data.guess)}" — ${data.partGuessed}!`);
+    revealHintCard(data.partGuessed, data.hints[data.partGuessed]);
   } else {
     playWrong();
-    state.wrongGuesses = data.wrongGuesses;
-    renderBollywoodLives(data.wrongGuesses);
-    showGuessToast(`❌ ${data.playerName}: "${data.guess}" — wrong! (${data.delta}pts)`, 'wrong');
-    addChatSystem(`❌ ${data.playerName} guessed "${data.guess}" — wrong.`);
+    showGuessToast(`❌ ${data.playerName}: "${data.guess}" — wrong`, 'wrong');
+    addChatSystem(`❌ ${escHtml(data.playerName)} guessed "${escHtml(data.guess)}" — wrong.`);
   }
 
-  // Update all hints (in case a new part was revealed)
   if (data.hints) syncHints(data.hints);
+  updateSolvedTracker(data.guessedParts, data.solvedBy);
   updateScoreboard(data.scores);
 }
 
 function onHintRevealed(data) {
-  playHintReveal();
   const map = {
-    year:     { id: 'hint-year',     inner: `📅 <b id="yr">${data.value}</b>` },
-    director: { id: 'hint-director', inner: `🎥 <b id="dir">${data.value}</b>` },
-    plot:     { id: 'hint-plot',     inner: `📖 <b id="plt">${data.value}</b>` },
+    year:     { id: 'hint-year',     inner: `📅 <b id="yr">${escHtml(String(data.value))}</b>` },
+    director: { id: 'hint-director', inner: `🎥 <b id="dir">${escHtml(String(data.value))}</b>` },
+    plot:     { id: 'hint-plot',     inner: `📖 <b id="plt">${escHtml(String(data.value))}</b>` },
   };
   const entry = map[data.type];
   if (entry) {
@@ -346,63 +278,38 @@ function onHintRevealed(data) {
     el.innerHTML = entry.inner;
     el.classList.remove('hidden');
   }
-  showNotif(`💡 New hint: ${data.type} revealed!`, 'good');
-  addChatSystem(`💡 Hint revealed: ${data.type}`);
+  addChatSystem(`💡 Hint: ${data.type} revealed`);
 }
 
 function onRoundEnd(data) {
   playRoundEnd();
+  state.roundActive = false;
   showRoundEndOverlay(data);
-  addChatSystem(`🏁 Round over! Movie was: ${data.movie.movie}`);
-
-  // Start overlay countdown
-  let count = 6;
-  $('next-countdown').textContent = count;
-  clearInterval(state.overlayCountdown);
-  state.overlayCountdown = setInterval(() => {
-    count--;
-    $('next-countdown').textContent = count;
-    if (count <= 0) {
-      clearInterval(state.overlayCountdown);
-      hideOverlay();
-    }
-  }, 1000);
+  showSelectMovieButton(true);
+  $('selector-controls').classList.add('hidden');
+  $('movie-details-bar').classList.add('hidden');
+  addChatSystem(`🏁 Round over! Movie: ${escHtml(data.movie.movie)}`);
 }
 
 function onMovieSkipped(data) {
-  // Show the reveal overlay briefly then auto-dismiss
   playRoundEnd();
+  state.roundActive = false;
+  state.isSelector  = false;
   showRoundEndOverlay(data);
-  addChatSystem(`⏭ Host skipped the movie. Answer: ${data.movie.movie}`);
-  let count = 3;
-  $('next-countdown').textContent = count;
-  clearInterval(state.overlayCountdown);
-  state.overlayCountdown = setInterval(() => {
-    count--;
-    if ($('next-countdown')) $('next-countdown').textContent = count;
-    if (count <= 0) {
-      clearInterval(state.overlayCountdown);
-      hideOverlay();
-    }
-  }, 1000);
+  showSelectMovieButton(true);
+  $('selector-controls').classList.add('hidden');
+  $('movie-details-bar').classList.add('hidden');
+  addChatSystem(`⏭ Movie skipped: ${escHtml(data.movie.movie)}`);
 }
 
-function onChatMessage(data) {
-  addChatMessage(data.playerName, data.message, false);
-}
+function onChatMessage(data) { addChatMessage(data.playerName, data.message, false); }
 
 function onGameError(msg) {
-  // Could be on lobby or mid-game
-  if (screens.lobby.classList.contains('active')) {
-    showLobbyError(msg);
-  } else {
-    showNotif(`⚠ ${msg}`, 'bad');
-  }
+  if (screens.lobby.classList.contains('active')) showLobbyError(msg);
+  else showNotif(`⚠ ${msg}`, 'bad');
 }
 
-// ═══════════════════════════════════════════════════════════════
-//  GAME ACTIONS
-// ═══════════════════════════════════════════════════════════════
+// ═══ Game Actions ════════════════════════════════════════════
 function submitGuess() {
   const val = $('guess-input').value.trim();
   if (!val) return;
@@ -410,31 +317,24 @@ function submitGuess() {
   $('guess-input').value = '';
   $('guess-input').focus();
 }
-
 function sendChat() {
   const val = $('chat-input').value.trim();
   if (!val) return;
   state.socket.emit('chat', { roomCode: state.roomCode, message: val });
   $('chat-input').value = '';
 }
-
 function copyRoomCode() {
-  navigator.clipboard.writeText(state.roomCode).then(() => {
-    showNotif('📋 Room code copied!', 'good');
-  }).catch(() => {
-    showNotif(`Room code: ${state.roomCode}`);
-  });
+  navigator.clipboard.writeText(state.roomCode)
+    .then(() => showNotif('📋 Code copied!', 'good'))
+    .catch(() => showNotif(`Code: ${state.roomCode}`));
 }
 
-// ═══════════════════════════════════════════════════════════════
-//  RENDER HELPERS
-// ═══════════════════════════════════════════════════════════════
+// ═══ Render Helpers ══════════════════════════════════════════
 
 function renderWaitingRoom(room) {
   state.roomCode = room.code;
   state.isHost   = room.hostId === state.myId;
   $('display-code').textContent = room.code;
-
   const list = $('waiting-player-list');
   list.innerHTML = '';
   room.players.forEach(p => {
@@ -443,24 +343,27 @@ function renderWaitingRoom(room) {
     pill.textContent = p.name;
     list.appendChild(pill);
   });
-
   $('host-controls').classList.toggle('hidden', !state.isHost);
   $('waiting-msg').classList.toggle('hidden', state.isHost);
 }
 
-function renderBollywoodLives(wrongCount) {
-  document.querySelectorAll('.bw-letter').forEach((el, i) => {
-    el.classList.toggle('lost', i < wrongCount);
+function resetHints() {
+  ['hero','heroine','movie','song'].forEach(part => {
+    $(`hint-${part}`).textContent = '?';
+    $(`full-${part}`).textContent = '';
+    $(`full-${part}`).classList.add('hidden');
+    $(`card-${part}`).classList.remove('guessed');
+    $(`badge-${part}`).textContent = '';
+    $(`badge-${part}`).classList.add('hidden');
   });
+  ['hint-year','hint-director','hint-plot'].forEach(id => $(id).classList.add('hidden'));
 }
 
 function renderHints(hints, guessedParts) {
-  const parts = ['hero', 'heroine', 'movie', 'song'];
-  parts.forEach(part => {
-    const letterEl  = $(`hint-${part}`);
-    const fullEl    = $(`full-${part}`);
-    const cardEl    = $(`card-${part}`);
-
+  ['hero','heroine','movie','song'].forEach(part => {
+    const letterEl = $(`hint-${part}`);
+    const fullEl   = $(`full-${part}`);
+    const cardEl   = $(`card-${part}`);
     if (guessedParts[part]) {
       letterEl.textContent = hints[part][0].toUpperCase();
       fullEl.textContent   = hints[part];
@@ -468,7 +371,6 @@ function renderHints(hints, guessedParts) {
       cardEl.classList.add('guessed');
     } else {
       letterEl.textContent = hints[part];
-      fullEl.textContent   = '';
       fullEl.classList.add('hidden');
       cardEl.classList.remove('guessed');
     }
@@ -476,14 +378,10 @@ function renderHints(hints, guessedParts) {
 }
 
 function syncHints(hints) {
-  // Called on guessResult — only reveal newly guessed cards
-  const parts = ['hero', 'heroine', 'movie', 'song'];
-  parts.forEach(part => {
+  ['hero','heroine','movie','song'].forEach(part => {
     const letterEl = $(`hint-${part}`);
     const fullEl   = $(`full-${part}`);
     const cardEl   = $(`card-${part}`);
-
-    // If the hint shows the full word (length > 1), it was guessed
     const isRevealed = hints[part] && hints[part].length > 1;
     if (isRevealed && !cardEl.classList.contains('guessed')) {
       letterEl.textContent = hints[part][0].toUpperCase();
@@ -497,7 +395,7 @@ function syncHints(hints) {
 }
 
 function revealHintCard(part, fullText) {
-  const cardEl   = $(`card-${part}`);
+  const cardEl = $(`card-${part}`);
   const letterEl = $(`hint-${part}`);
   const fullEl   = $(`full-${part}`);
   if (fullText) {
@@ -508,44 +406,81 @@ function revealHintCard(part, fullText) {
   cardEl.classList.add('guessed');
 }
 
-function getFullValueForPart(part, hints) {
-  return hints ? hints[part] : '';
+function resetSolvedTracker() {
+  ['hero','heroine','movie','song'].forEach(part => {
+    const el = $(`solved-${part}`);
+    el.classList.remove('done');
+    el.querySelector('.solved-icon').textContent = '○';
+  });
+}
+
+function updateSolvedTracker(guessedParts, solvedBy) {
+  ['hero','heroine','movie','song'].forEach(part => {
+    const el    = $(`solved-${part}`);
+    const badge = $(`badge-${part}`);
+    if (guessedParts[part]) {
+      el.classList.add('done');
+      el.querySelector('.solved-icon').textContent = '●';
+      if (solvedBy && solvedBy[part]) {
+        badge.textContent = `✓ ${solvedBy[part].name}`;
+        badge.classList.remove('hidden');
+      }
+    }
+  });
+}
+
+function updateTimer(seconds) {
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  $('timer-count').textContent = `${m}:${String(s).padStart(2, '0')}`;
+
+  // SVG arc
+  const C      = 163.4;
+  const offset = C - (C * (seconds / state.timerMax));
+  const arc    = $('timer-arc');
+  arc.style.strokeDashoffset = offset;
+  const urgent = seconds <= 30;
+  $('timer-count').classList.toggle('urgent', urgent);
+  arc.classList.toggle('urgent', urgent);
+}
+
+function showSelectMovieButton(show) {
+  $('btn-select-movie').classList.toggle('hidden', !show);
+}
+
+function hideGuessArea(isSelector) {
+  $('guess-area').classList.toggle('hidden', isSelector);
 }
 
 function updateScoreboard(scores) {
   const list = $('scoreboard-list');
   list.innerHTML = '';
-  const medals = ['🥇', '🥈', '🥉'];
+  const medals = ['🥇','🥈','🥉'];
   scores.forEach((s, i) => {
     const li = document.createElement('li');
     li.className = 'score-item' + (s.id === state.myId ? ' me' : '');
     li.innerHTML = `
-      <span class="score-rank">${medals[i] || (i + 1)}</span>
+      <span class="score-rank">${medals[i] || (i+1)}</span>
       <span class="score-name">${escHtml(s.name)}</span>
       <span class="score-pts">${s.score}</span>`;
     list.appendChild(li);
   });
 }
 
-function toggleHostControls() {
-  $('host-game-controls').classList.toggle('hidden', !state.isHost);
-}
-
-// ── Round end overlay ───────────────────────────────────────
+// ── Overlay ─────────────────────────────────────────────────
 function showRoundEndOverlay(data) {
-  const { movie, scores } = data;
-
+  const { movie, scores, solvedBy } = data;
   $('overlay-title').textContent = '🎬 Round Over!';
 
   const grid = $('reveal-grid');
   grid.innerHTML = '';
   [
-    { label: '🎭 Hero',    val: movie.hero },
-    { label: '💃 Heroine', val: movie.heroine },
-    { label: '🎬 Movie',   val: movie.movie },
-    { label: '🎵 Song',    val: movie.song },
-    { label: '📅 Year',    val: movie.year },
-    { label: '🎥 Director',val: movie.director },
+    { label: '🎭 Hero',     val: movie.hero },
+    { label: '💃 Heroine',  val: movie.heroine },
+    { label: '🎬 Movie',    val: movie.movie },
+    { label: '🎵 Song',     val: movie.song },
+    { label: '📅 Year',     val: movie.year },
+    { label: '🎥 Director', val: movie.director },
   ].forEach(({ label, val }) => {
     const div = document.createElement('div');
     div.className = 'reveal-item';
@@ -553,16 +488,20 @@ function showRoundEndOverlay(data) {
     grid.appendChild(div);
   });
 
-  // Plot spans full width
-  if (movie.plot) {
-    const div = document.createElement('div');
-    div.className = 'reveal-item';
-    div.style.gridColumn = '1/-1';
-    div.innerHTML = `<div class="ri-label">📖 Plot</div><div class="ri-value" style="font-weight:400;font-size:.82rem;color:var(--text-dim)">${escHtml(movie.plot)}</div>`;
-    grid.appendChild(div);
+  // Solved summary
+  const sumDiv = $('solved-summary');
+  sumDiv.innerHTML = '';
+  if (solvedBy) {
+    ['hero','heroine','movie','song'].forEach(part => {
+      if (solvedBy[part]) {
+        const sp = document.createElement('span');
+        sp.className = 'solved-pill';
+        sp.textContent = `${part}: ${solvedBy[part].name}`;
+        sumDiv.appendChild(sp);
+      }
+    });
   }
 
-  // Final scores
   const scoreDiv = $('overlay-scores');
   scoreDiv.innerHTML = '';
   scores.forEach(s => {
@@ -572,6 +511,7 @@ function showRoundEndOverlay(data) {
     scoreDiv.appendChild(pill);
   });
 
+  $('overlay-msg').textContent = 'Pick a new movie to start the next round!';
   $('round-end-overlay').classList.remove('hidden');
 }
 
@@ -580,7 +520,7 @@ function hideOverlay() {
   clearInterval(state.overlayCountdown);
 }
 
-// ── Chat helpers ────────────────────────────────────────────
+// ── Chat ────────────────────────────────────────────────────
 function addChatMessage(sender, text, isSystem) {
   const box = $('chat-messages');
   const div = document.createElement('div');
@@ -589,12 +529,9 @@ function addChatMessage(sender, text, isSystem) {
   box.appendChild(div);
   box.scrollTop = box.scrollHeight;
 }
+function addChatSystem(text) { addChatMessage('System', text, true); }
 
-function addChatSystem(text) {
-  addChatMessage('System', text, true);
-}
-
-// ── Toasts / Notifications ──────────────────────────────────
+// ── Toast / Notif ───────────────────────────────────────────
 function showGuessToast(msg, type) {
   const el = $('guess-toast');
   el.textContent = msg;
@@ -603,10 +540,7 @@ function showGuessToast(msg, type) {
   clearTimeout(state.guessToastTimer);
   state.guessToastTimer = setTimeout(() => el.classList.add('hidden'), 3000);
 }
-
-function hideGuessToast() {
-  $('guess-toast').classList.add('hidden');
-}
+function hideGuessToast() { $('guess-toast').classList.add('hidden'); }
 
 let notifTimer = null;
 function showNotif(msg, type = '') {
@@ -618,15 +552,8 @@ function showNotif(msg, type = '') {
   notifTimer = setTimeout(() => el.classList.add('hidden'), 3000);
 }
 
-// ── XSS guard ───────────────────────────────────────────────
 function escHtml(str) {
-  return String(str)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#039;');
+  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;');
 }
 
-// ═══ Boot ════════════════════════════════════════════════════
 window.addEventListener('DOMContentLoaded', init);
